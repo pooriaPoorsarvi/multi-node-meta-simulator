@@ -37,7 +37,7 @@ class SimulationNode:
         return math.ceil(host_second_to_simulate_target_nano * 1e9) # Convert to nanoseconds
 
     def target_quanta_nanoseconds_to_host_nanoseconds(self):
-        """Calculate the nanoseconds to simulate one quanta."""
+        """Calculate the nanoseconds to simulate one quanta, based on host time."""
         return self.target_nano_to_host_nano() * self.get_quanta_nanoseconds()
 
     def get_id(self):
@@ -79,13 +79,30 @@ class SimulationNode:
         self.connected_nodes = set()
         self.synchronization_communication_overhead = 0
         self.quanta_communication_overhead = 0
+        self.at_barrier = False
+        self.can_process_barrier = False
+
+        # information that enable partrial quanta simulation
+        self.next_marker_time_ns = 0
+        self.current_indp_executed = 0
+        self.next_quanta_instructions_executed = 0
+        self.next_synchronization_communication_overhead = 0
+        self.next_synchronization_overhead_in_nanoseconds = 0
+
+
+        # Because of none global quanta, we need to calculate the next quanta information after initialization.
+        self.has_been_initialized = False
         super().__init__(*args, **kwargs)
 
-    def jump_host_to_time(self, time_nanoseconds: int):
-        """Jump to a specific time in nanoseconds."""
-        self.current_host_time_nanoseconds = time_nanoseconds
 
-    def synchronization_overhead_in_nanoseconds(self):
+    def initialize(self):
+        """Initialize the simulation node."""
+        assert self.quanta_nanoseconds > 0, "Quanta nanoseconds must be set before initializing the node."
+        self.calculate_next_quanta_information()
+        self.has_been_initialized = True
+
+
+    def get_synchronization_overhead_in_nanoseconds(self):
         """Get the synchronization overhead in nanoseconds."""
         return 0
     
@@ -106,36 +123,116 @@ class SimulationNode:
             return self.current_target_time_nanoseconds >= self.target_time_nanoseconds_goal
         else:
             return False
-    def simulate_for_quanta(self):
-        """Run the simulation node."""
-        assert self.quanta_nanoseconds > 0, "Quanta nanoseconds must be set before simulating."
-        self.current_host_time_nanoseconds += self.target_quanta_nanoseconds_to_host_nanoseconds()
-        self.current_host_time_nanoseconds += self.get_synchronization_communication_overhead()
-        self.current_host_time_nanoseconds += self.synchronization_overhead_in_nanoseconds()
-        self.current_target_time_nanoseconds += self.get_quanta_nanoseconds()
-        self.target_instructions_executed += self.get_instructions_per_quanta()
+        
+    def calculate_next_quanta_information(self):
+        assert self.current_indp_executed == 0, "Can not estimate next execution, mid execution"
+        
+        # How much will the next quanta take in host nanoseconds?
+        self.next_marker_time_ns = self.target_quanta_nanoseconds_to_host_nanoseconds()
 
-        return self.current_host_time_nanoseconds
+        # How many instruction will be executed in the next quanta?
+        self.next_quanta_instructions_executed = self.get_instructions_per_quanta()
+        
 
-    def get_number_of_quanta_for_nanoseconds_in_target(self, time_nanoseconds: int):
-        """Get the number of quanta for a given time in nanoseconds."""
-        return time_nanoseconds // self.get_quanta_nanoseconds()
+        
+        
+        return self.next_marker_time_ns
+
+    def calculate_barrier_end_information(self):
+        """Calculate the information needed to move past the barrier."""
+        assert self.at_barrier, "Can not calculate barrier end information if not at barrier."
+        assert self.current_indp_executed == 0, "Can not calculate barrier end information if current executed is not 0."
+
+
+        # At the barrier how much communication overhead will be there?
+        self.next_synchronization_communication_overhead = self.get_synchronization_communication_overhead()
+        
+        # How much overhead will be at the barrier for everything else?
+        self.next_synchronization_overhead_in_nanoseconds = self.get_synchronization_overhead_in_nanoseconds()
+
+        over_heads = self.next_synchronization_communication_overhead + self.next_synchronization_overhead_in_nanoseconds
+        self.next_marker_time_ns = over_heads
+        
+        
     
-    def get_number_of_quanta_for_instructions(self, instructions: int):
-        """Get the number of quanta for a given number of instructions."""
-        return instructions // self.get_instructions_per_quanta()
+    def get_next_indp_work_time_ns_host(self):
+        """Get the remaining host time in the current quanta."""
+        return self.next_marker_time_ns - self.current_indp_executed
 
-    def simulate_for_instructions(self, instructions: int):
-        """Run the simulation node for a given number of instructions."""
-        self.target_instructions_goal = instructions
-        while not self.is_done():
-            yield self.simulate_for_quanta()
 
-    def simulate_for_nanoseconds_in_target(self, time_nanoseconds: int):
-        """Run the simulation node for a given time in nanoseconds."""
-        self.target_time_nanoseconds_goal = time_nanoseconds
-        while not self.is_done():
-            yield self.simulate_for_quanta()
+
+
+    def move_within_quanta(self):
+        """Move within the current quanta, simulating the given amount of time."""
+
+        # TODO : in the middle of quanta the instruction and target time are not updated right now.
+
+        if self.current_indp_executed >= self.next_marker_time_ns:
+            assert self.current_indp_executed == self.next_marker_time_ns, "Host execution in this quanta should be equal to the host length of next quanta."
+            
+            # We are at the barrier
+            self.at_barrier = True
+
+            # We have reached the end of the quanta.
+            # Update the target time and instructions executed.
+            # This one calls the function cause the quanta is constant, if it was not constant, we would need to save it like the other variables.
+            self.current_target_time_nanoseconds += self.get_quanta_nanoseconds()
+            self.target_instructions_executed += self.next_quanta_instructions_executed
+
+            # Rest and calculate the barrier computation information.
+            self.current_indp_executed = 0
+            self.calculate_barrier_end_information()
+
+
+
+    def move_with_in_barrier(self):
+        """Move within the barrier, simulating the given amount of time."""
+
+        if self.current_indp_executed >= self.next_marker_time_ns:
+
+            # Update the flags for the barrier.
+            self.at_barrier = False
+            self.can_process_barrier = False
+
+            # Rest and calcuate the next quanta information.
+            self.current_indp_executed = 0
+            self.calculate_next_quanta_information()
+
+    def is_independent(self) -> bool:
+        """Check if the node is independent, meaning it can work without waiting for other nodes."""
+        if self.is_done():
+            return False
+        if self.at_barrier and not self.can_process_barrier:
+            return False
+        return True
+        
+
+    def simulate(self, amount_time_to_simulate_ns: int):
+        """Run the simulation node for a specific amount of time.
+        If host_simulation_time_nanoseconds is -1, it will move ahead until we reach the quanta."""
+        assert self.has_been_initialized, "Node must be initialized before simulating." 
+        
+        if self.is_independent():
+            remaining_host_quanta_time = self.get_next_indp_work_time_ns_host()
+
+            assert remaining_host_quanta_time >= amount_time_to_simulate_ns, f"Can not simulate {amount_time_to_simulate_ns} ns, remaining host quanta time is {remaining_host_quanta_time} ns."
+            self.current_indp_executed += amount_time_to_simulate_ns
+
+        # Other wise it's fine and we are just waiting
+
+        # update global host time
+        self.current_host_time_nanoseconds += amount_time_to_simulate_ns
+        # update how much host has gone forward for quanta
+        
+        if self.at_barrier:
+            # We are processing the barrier
+            if self.can_process_barrier:
+                self.move_with_in_barrier()
+            # Else it's just waisted time like real life
+
+        else:
+            self.move_within_quanta()
+
 
 class MasterNode:
     pass

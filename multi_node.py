@@ -12,7 +12,8 @@ class MultiNodeSimulation:
                  has_global_quanta: bool,
                  nodes: list[SimulationNode],
                  graph: nx.Graph,
-                 master_node: MasterNode = None):
+                 master_node: MasterNode = None,
+                 verbose: bool = False):
     
         """        Initialize the simulation configuration.
 
@@ -58,6 +59,10 @@ class MultiNodeSimulation:
             assert master_node is not None, "In a non-distributed simulation, a master node must be provided."
             self.master_node = master_node
 
+        for node in self.nodes:
+            node.initialize()
+
+        self.verbose = verbose
         
         # if has_global_barrier:
             # TODO: Implement global barrier management
@@ -65,14 +70,8 @@ class MultiNodeSimulation:
 
 
 
-    def simulate_network(self):
-        """Get the total synchronization overhead in nanoseconds for all nodes."""
-        for node in self.nodes:
-            node.simulate_network()
-    
 
-
-        raise NotImplementedError("Global barrier and global quanta simulation not implemented yet.")
+        # raise NotImplementedError("Global barrier and global quanta simulation not implemented yet.")
 
     def simulate_for_instructions(self, instructions: int):
         """Simulate the environment for a given number of instructions."""
@@ -94,47 +93,77 @@ class MultiNodeSimulation:
         else:
             # TODO : use master node must be used here
             pass
-    
-    def pause_nodes_based_on_barrier(self):
-        """Pause nodes based on the global barrier or neighbor synchronization. 
-        If there is a global barrier, all nodes will wait (on host time) until ths slowest node has reached it's qunata.
-        If there is no global barrier, each node will wait for the slowest neighbor to reach its quanta."""
-        if self.has_global_barrier:
-            max_host_time = 0
-            finished = True
-            for node in self.nodes:
-                if node.current_host_time_nanoseconds > max_host_time:
-                    max_host_time = node.current_host_time_nanoseconds
-                if not node.is_done():
-                    finished = False
-            for node in self.nodes:
-                node.jump_host_to_time(max_host_time)
-            return finished
-        else:
-            finished = True
-            for node in self.nodes:
-                if not node.is_done():
-                    finished = False
-                id = node.get_id()
-                neighbors = self.graph.neighbors(id)
-                max_neighbor_time = node.current_host_time_nanoseconds
-                for neighbor in neighbors:
-                    neighbor_node = self.nodes_dict[neighbor]
-                    if neighbor_node.current_host_time_nanoseconds > max_neighbor_time:
-                        max_neighbor_time = neighbor_node.current_host_time_nanoseconds
-                node.jump_host_to_time(max_neighbor_time)
-            return finished
+    def is_glbal_barrier_ready(self):
+        """Check if the global barrier is ready."""
+        return all(node.at_barrier for node in self.nodes)
 
+    def is_local_barrier_ready(self, node: SimulationNode):
+        return all(self.nodes_dict[neighbor].at_barrier for neighbor in self.graph.neighbors(node.get_id()))
+
+    def update_barriers(self):
+        """Update whether or not a nod can leave its end of quanta barrier"""
+        if self.has_global_barrier:
+            # If we have a global barrier, we check if all nodes have reached their quanta.
+            if self.is_glbal_barrier_ready():
+                for node in self.nodes:
+                    node.can_process_barrier = True
+        else:
+            is_global_barrier_ready = self.is_glbal_barrier_ready()
+            for node in self.nodes:
+                if self.is_local_barrier_ready(node) and node.at_barrier and not node.is_done():
+                    node.can_process_barrier = True
+                    # if not is_global_barrier_ready:
+                    #     print(f"Node {node.get_id()} can process barrier, but global barrier is not ready.")
+                
+
+        
+
+    def print_simulation_state(self):
+        """Print the current state of the simulation."""
+        for node in self.nodes:
+            print(f"Node {node.get_id()} - "
+                  f"At Barrier: {node.at_barrier}, "
+                  f"Can Process Barrier: {node.can_process_barrier}, "
+                  f"Current Host Time: {node.current_host_time_nanoseconds} ns, "
+                  f"Target Time: {node.current_target_time_nanoseconds} ns, "
+                  f"Current Executed: {node.current_indp_executed} ns, "
+                  f"Next Marker Time: {node.next_marker_time_ns} ns, "
+                  f"current target instruction executed: {node.target_instructions_executed}, ")
 
 
     def simulate(self):
         self.schedule_nodes()
+
         finished = False
         while not finished:
+            finished = True
+            min_time_to_simulate = min([node.get_next_indp_work_time_ns_host() for node in self.nodes if node.is_independent()])
+            if self.verbose:
+                print("="*50)
+                self.print_simulation_state()
+                print(f"Simulating for {min_time_to_simulate} nanoseconds.")
+            assert min_time_to_simulate > 0, "Nodes are not finished yet, but no time to simulate. This should not happen."
+         
             for node in self.nodes:
+                node.simulate(min_time_to_simulate)
                 if not node.is_done():
-                    node.simulate_for_quanta()
-            finished = self.pause_nodes_based_on_barrier()
+                    finished = False
+
+            if self.verbose:
+                print("after simulating")
+                self.print_simulation_state()
+
+            self.update_barriers()
+            
+            if self.verbose:
+                print("after updating barriers")
+                self.print_simulation_state()
+                print("="*50)
+
+           
+                
+
+        
         time = max([node.current_host_time_nanoseconds for node in self.nodes])
         return time
                             

@@ -33,9 +33,9 @@ def get_simulation():
 
     return multi_node_simulation
 
-instruction_count = int(1e10)  # 10 billion instructions
-time = get_simulation().simulate_for_instructions(int(instruction_count))
-print(f"Simulation time: {time*1e-9} seconds for {instruction_count} instructions.")
+# instruction_count = int(1e4)  # 10 billion instructions
+# time = get_simulation().simulate_for_instructions(int(instruction_count))
+# print(f"Simulation time: {time*1e-9} seconds for {instruction_count} instructions.")
 
 target_time = int(10e9)  # 10 second in nanoseconds
 time = get_simulation().simulate_for_nanoseconds_in_target(target_time)
