@@ -1,4 +1,4 @@
-from simulation_nodes import SimulationNode
+from simulation_nodes import SimulationNode, MasterNode
 
 import networkx as nx
 
@@ -11,7 +11,8 @@ class MultiNodeSimulation:
                  is_distributed: bool,
                  has_global_quanta: bool,
                  nodes: list[SimulationNode],
-                 graph: nx.Graph):
+                 graph: nx.Graph,
+                 master_node: MasterNode = None):
     
         """        Initialize the simulation configuration.
 
@@ -48,8 +49,15 @@ class MultiNodeSimulation:
             self.nodes_dict[node2].set_quanta_nanoseconds(latency_nanoseconds)
 
 
-        # if has_global_quanta:
-            # TODO: Implement global quanta management
+        if has_global_quanta:
+            for node in self.nodes:
+                id = node.get_id()
+                min_latency_nano_seconds = min([self.graph[id][neighbor]['latency_nanoseconds'] for neighbor in self.graph.neighbors(id)])
+                node.set_quanta_nanoseconds(min_latency_nano_seconds)
+        if not self.is_distributed:
+            assert master_node is not None, "In a non-distributed simulation, a master node must be provided."
+            self.master_node = master_node
+
         
         # if has_global_barrier:
             # TODO: Implement global barrier management
@@ -63,41 +71,75 @@ class MultiNodeSimulation:
             node.simulate_network()
     
 
-    def simulate(self, simulators_time_generator, number_of_quantas):
-
-        max_time = 0
-
-        if self.has_global_barrier:
-            if self.has_global_quanta:
-                if not self.is_distributed:
-                    assert len(set(number_of_quantas)) == 1, "All nodes must have the same number of quanta in a global quanta simulation."
-                    quantas = number_of_quantas[0]
-                    print(f"Running global quanta simulation for {quantas} quantas.")
-                    for _ in range(quantas):
-                        # If there is a global barrier, we need to wait for all nodes to finish their simulation
-                        max_time = max([next(simulator_time) for simulator_time in simulators_time_generator])
-                        for node in self.nodes:
-                            node.jump_to_time(max_time)
-                    return max_time
 
         raise NotImplementedError("Global barrier and global quanta simulation not implemented yet.")
 
     def simulate_for_instructions(self, instructions: int):
         """Simulate the environment for a given number of instructions."""
-        simulators_time_generator = [node.simulate_for_instructions(instructions) for node in self.nodes]
-        number_of_quantas = list([node.get_number_of_quanta_for_instructions(instructions) for node in self.nodes])
+        for node in self.nodes:
+            node.target_instructions_goal = instructions
 
-        return self.simulate(simulators_time_generator, number_of_quantas)
+        return self.simulate()
     
     def simulate_for_nanoseconds_in_target(self, time_nanoseconds: int):
         """Simulate the environment for a given number of nanoseconds."""
-        simulators_time_generator = [node.simulate_for_nanoseconds_in_target(time_nanoseconds) for node in self.nodes]
-        number_of_quantas = list([node.get_number_of_quanta_for_nanoseconds_in_target(time_nanoseconds) for node in self.nodes])
+        for node in self.nodes:
+            node.target_time_nanoseconds_goal = time_nanoseconds
 
-        return self.simulate(simulators_time_generator, number_of_quantas)
+        return self.simulate()
+
+    def schedule_nodes(self):
+        if self.is_distributed:
+            pass
+        else:
+            # TODO : use master node must be used here
+            pass
+    
+    def pause_nodes_based_on_barrier(self):
+        """Pause nodes based on the global barrier or neighbor synchronization. 
+        If there is a global barrier, all nodes will wait (on host time) until ths slowest node has reached it's qunata.
+        If there is no global barrier, each node will wait for the slowest neighbor to reach its quanta."""
+        if self.has_global_barrier:
+            max_host_time = 0
+            finished = True
+            for node in self.nodes:
+                if node.current_host_time_nanoseconds > max_host_time:
+                    max_host_time = node.current_host_time_nanoseconds
+                if not node.is_done():
+                    finished = False
+            for node in self.nodes:
+                node.jump_host_to_time(max_host_time)
+            return finished
+        else:
+            finished = True
+            for node in self.nodes:
+                if not node.is_done():
+                    finished = False
+                id = node.get_id()
+                neighbors = self.graph.neighbors(id)
+                max_neighbor_time = node.current_host_time_nanoseconds
+                for neighbor in neighbors:
+                    neighbor_node = self.nodes_dict[neighbor]
+                    if neighbor_node.current_host_time_nanoseconds > max_neighbor_time:
+                        max_neighbor_time = neighbor_node.current_host_time_nanoseconds
+                node.jump_host_to_time(max_neighbor_time)
+            return finished
 
 
-        
+
+    def simulate(self):
+        self.schedule_nodes()
+        finished = False
+        while not finished:
+            for node in self.nodes:
+                if not node.is_done():
+                    node.simulate_for_quanta()
+            finished = self.pause_nodes_based_on_barrier()
+        time = max([node.current_host_time_nanoseconds for node in self.nodes])
+        return time
+                            
+                    
+                            
         
                 
 

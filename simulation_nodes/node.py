@@ -67,7 +67,11 @@ class SimulationNode:
         self.name = id
         self.simulation_speed_ips = simulation_speed_ips
         self.quanta_nanoseconds = -1
-        self.current_time_nanoseconds = 0
+        self.current_host_time_nanoseconds = 0
+        self.current_target_time_nanoseconds = 0
+        self.target_instructions_executed = 0
+        self.target_instructions_goal = -1
+        self.target_time_nanoseconds_goal = -1
 
         self.machine_cycle_per_nano_second = 5 # Default value, can be overridden by subclasses, 2 GhZ
         self.machine_instruction_per_cycle = 2
@@ -77,9 +81,9 @@ class SimulationNode:
         self.quanta_communication_overhead = 0
         super().__init__(*args, **kwargs)
 
-    def jump_to_time(self, time_nanoseconds: int):
+    def jump_host_to_time(self, time_nanoseconds: int):
         """Jump to a specific time in nanoseconds."""
-        self.current_time_nanoseconds = time_nanoseconds
+        self.current_host_time_nanoseconds = time_nanoseconds
 
     def synchronization_overhead_in_nanoseconds(self):
         """Get the synchronization overhead in nanoseconds."""
@@ -94,14 +98,24 @@ class SimulationNode:
         """set any communication overheads based on network state."""
         self.synchronization_communication_overhead = 0
 
+    def is_done(self):
+        """Check if the simulation node has reached its goal."""
+        if self.target_instructions_goal > 0:
+            return self.target_instructions_executed >= self.target_instructions_goal
+        elif self.target_time_nanoseconds_goal > 0:
+            return self.current_target_time_nanoseconds >= self.target_time_nanoseconds_goal
+        else:
+            return False
     def simulate_for_quanta(self):
         """Run the simulation node."""
         assert self.quanta_nanoseconds > 0, "Quanta nanoseconds must be set before simulating."
-        self.current_time_nanoseconds += self.target_quanta_nanoseconds_to_host_nanoseconds()
-        self.current_time_nanoseconds += self.get_synchronization_communication_overhead()
-        self.current_time_nanoseconds += self.synchronization_overhead_in_nanoseconds()
+        self.current_host_time_nanoseconds += self.target_quanta_nanoseconds_to_host_nanoseconds()
+        self.current_host_time_nanoseconds += self.get_synchronization_communication_overhead()
+        self.current_host_time_nanoseconds += self.synchronization_overhead_in_nanoseconds()
+        self.current_target_time_nanoseconds += self.get_quanta_nanoseconds()
+        self.target_instructions_executed += self.get_instructions_per_quanta()
 
-        return self.current_time_nanoseconds
+        return self.current_host_time_nanoseconds
 
     def get_number_of_quanta_for_nanoseconds_in_target(self, time_nanoseconds: int):
         """Get the number of quanta for a given time in nanoseconds."""
@@ -113,14 +127,15 @@ class SimulationNode:
 
     def simulate_for_instructions(self, instructions: int):
         """Run the simulation node for a given number of instructions."""
-        for _ in range(self.get_number_of_quanta_for_instructions(instructions)):
+        self.target_instructions_goal = instructions
+        while not self.is_done():
             yield self.simulate_for_quanta()
-        # TODO handle remaining instructions if any
-        yield self.current_time_nanoseconds
 
     def simulate_for_nanoseconds_in_target(self, time_nanoseconds: int):
         """Run the simulation node for a given time in nanoseconds."""
-        for _ in range(self.get_number_of_quanta_for_nanoseconds_in_target(time_nanoseconds)):
+        self.target_time_nanoseconds_goal = time_nanoseconds
+        while not self.is_done():
             yield self.simulate_for_quanta()
-        # TODO handle remaining time if any
-        yield self.current_time_nanoseconds
+
+class MasterNode:
+    pass
