@@ -95,10 +95,30 @@ class MultiNodeSimulation:
             pass
     def is_glbal_barrier_ready(self):
         """Check if the global barrier is ready."""
-        return all(node.at_barrier for node in self.nodes)
+        return all(node.MODE == "SYNCHRONIZATION" or node.MODE == "WAITING_ON_BARRIER" for node in self.nodes)
 
     def is_local_barrier_ready(self, node: SimulationNode):
-        return all(self.nodes_dict[neighbor].at_barrier for neighbor in self.graph.neighbors(node.get_id()))
+        can_leave_barrier = True
+
+        for neighbor in self.graph.neighbors(node.get_id()):
+            neighbor_node = self.nodes_dict[neighbor]
+            if neighbor_node.MODE == "QUANTA_SIMULATION":
+                if neighbor_node.current_target_time_nanoseconds <= node.current_target_time_nanoseconds:
+                    can_leave_barrier = False
+                    break
+        
+        return can_leave_barrier
+ 
+    def sanity_check_of_neighbors(self, node: SimulationNode):
+        """Check if all neighbors of a node are in the correct mode and no one is ahead of the node."""
+        if node.MODE == "WAITING_ON_BARRIER":
+            nighbors = self.graph.neighbors(node.get_id())
+            for neighbor in nighbors:
+                neighbor_node = self.nodes_dict[neighbor]
+                if neighbor_node.MODE == "QUANTA_SIMULATION":
+                    if neighbor_node.current_target_time_nanoseconds >= node.current_target_time_nanoseconds:
+                        # Raise an error and show how the target time of us is less than our neighbor while they are ahead of us.
+                        raise ValueError(f"Node {node.get_id()} is in WAITING_ON_BARRIER mode, but neighbor {neighbor_node.get_id()} is in QUANTA_SIMULATION mode with target time {neighbor_node.current_target_time_nanoseconds} ns, which is greater than or equal to {node.current_target_time_nanoseconds} ns.")
 
     def update_barriers(self):
         """Update whether or not a nod can leave its end of quanta barrier"""
@@ -106,14 +126,16 @@ class MultiNodeSimulation:
             # If we have a global barrier, we check if all nodes have reached their quanta.
             if self.is_glbal_barrier_ready():
                 for node in self.nodes:
-                    node.can_process_barrier = True
+                    node.change_mode("SYNCHRONIZATION")
         else:
             is_global_barrier_ready = self.is_glbal_barrier_ready()
             for node in self.nodes:
-                if self.is_local_barrier_ready(node) and node.at_barrier and not node.is_done():
-                    node.can_process_barrier = True
+                if self.is_local_barrier_ready(node) and node.MODE == "WAITING_ON_BARRIER" and not node.is_done():
+                    node.change_mode("SYNCHRONIZATION")
                     # if not is_global_barrier_ready:
                     #     print(f"Node {node.get_id()} can process barrier, but global barrier is not ready.")
+            # for node in self.nodes:
+            #     self.sanity_check_of_neighbors(node)
                 
 
         
@@ -121,14 +143,18 @@ class MultiNodeSimulation:
     def print_simulation_state(self):
         """Print the current state of the simulation."""
         for node in self.nodes:
+            total_execution_time = "NA"
+            time_left = "NA"
+            if node.execution_details is not None:
+                total_execution_time = node.execution_details.get_total_execution_time()
+                time_left = node.execution_details.get_time_left_ns()
             print(f"Node {node.get_id()} - "
-                  f"At Barrier: {node.at_barrier}, "
-                  f"Can Process Barrier: {node.can_process_barrier}, "
+                  f"Mode: {node.MODE}, "
                   f"Current Host Time: {node.current_host_time_nanoseconds} ns, "
                   f"Target Time: {node.current_target_time_nanoseconds} ns, "
-                  f"Current Executed: {node.current_indp_executed} ns, "
-                  f"Next Marker Time: {node.next_marker_time_ns} ns, "
-                  f"current target instruction executed: {node.target_instructions_executed}, ")
+                  f"current target instruction executed: {node.target_instructions_executed}, "
+                  f"Execution total execution time: {total_execution_time}"
+                  f"Execution detail time left: {time_left} ns, ")
 
 
     def simulate(self):
@@ -137,7 +163,7 @@ class MultiNodeSimulation:
         finished = False
         while not finished:
             finished = True
-            min_time_to_simulate = min([node.get_next_indp_work_time_ns_host() for node in self.nodes if node.is_independent()])
+            min_time_to_simulate = min([node.execution_details.get_time_left_ns() for node in self.nodes if (not node.MODE == "WAITING_ON_BARRIER")])
             if self.verbose:
                 print("="*50)
                 self.print_simulation_state()
