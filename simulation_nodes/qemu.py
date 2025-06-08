@@ -35,6 +35,8 @@ class SimpleQemuSimulationNodeWithNoiseWithPreDetermainedNoise(SimpleQemuSimulat
         without_noise = super().target_quanta_nanoseconds_to_host_nanoseconds()
         noise_factor = self.noise_array[self.noise_index]
         self.noise_index += 1
+        if self.noise_index >= len(self.noise_array):
+            self.noise_index = 0
         return int(without_noise * (1 + noise_factor))  # Add noise to the base time
 
 
