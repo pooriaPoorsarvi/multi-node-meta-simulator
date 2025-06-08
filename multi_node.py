@@ -1,7 +1,9 @@
+import sys
+
 from simulation_nodes import SimulationNode, MasterNode
 
 import networkx as nx
-
+from loguru import logger
 
 class MultiNodeSimulation:
     """Configuration for the simulation environment comprised of multiple hardware simulators."""
@@ -12,7 +14,8 @@ class MultiNodeSimulation:
                  has_global_quanta: bool,
                  nodes: list[SimulationNode],
                  graph: nx.Graph,
-                 master_node: MasterNode = None):
+                 master_node: MasterNode = None,
+                 verbose: bool = False):
     
         """        Initialize the simulation configuration.
 
@@ -58,6 +61,11 @@ class MultiNodeSimulation:
             assert master_node is not None, "In a non-distributed simulation, a master node must be provided."
             self.master_node = master_node
 
+        for node in self.nodes:
+            node.initialize()
+
+        self.verbose = verbose
+        self.setup_logger()
         
         # if has_global_barrier:
             # TODO: Implement global barrier management
@@ -65,14 +73,34 @@ class MultiNodeSimulation:
 
 
 
-    def simulate_network(self):
-        """Get the total synchronization overhead in nanoseconds for all nodes."""
-        for node in self.nodes:
-            node.simulate_network()
-    
 
+        # raise NotImplementedError("Global barrier and global quanta simulation not implemented yet.")
 
-        raise NotImplementedError("Global barrier and global quanta simulation not implemented yet.")
+    def setup_logger(self):
+        # TODO probably need to move logger setup to a separate module
+        # 1) remove the default handler
+        logger.remove()
+
+        # 2) define a filter that only lets DEBUG-level records through if verbose=True
+        def filter_verbose(record):
+            level_no = record["level"].no
+            is_debug = level_no == logger.level("DEBUG").no
+            return self.verbose or not is_debug
+
+        # 3) add a sink with that filter
+        logger.add(
+            sys.stderr,
+            level="DEBUG",           # allow DEBUG records… 
+            filter=filter_verbose,   # …but drop them if verbose==False
+            format=(
+                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                "<level>{level: <8}</level> | "
+                "{message}"
+            ),
+            backtrace=True,
+            diagnose=True,
+        )
+
 
     def simulate_for_instructions(self, instructions: int):
         """Simulate the environment for a given number of instructions."""
@@ -94,47 +122,88 @@ class MultiNodeSimulation:
         else:
             # TODO : use master node must be used here
             pass
-    
-    def pause_nodes_based_on_barrier(self):
-        """Pause nodes based on the global barrier or neighbor synchronization. 
-        If there is a global barrier, all nodes will wait (on host time) until ths slowest node has reached it's qunata.
-        If there is no global barrier, each node will wait for the slowest neighbor to reach its quanta."""
-        if self.has_global_barrier:
-            max_host_time = 0
-            finished = True
-            for node in self.nodes:
-                if node.current_host_time_nanoseconds > max_host_time:
-                    max_host_time = node.current_host_time_nanoseconds
-                if not node.is_done():
-                    finished = False
-            for node in self.nodes:
-                node.jump_host_to_time(max_host_time)
-            return finished
-        else:
-            finished = True
-            for node in self.nodes:
-                if not node.is_done():
-                    finished = False
-                id = node.get_id()
-                neighbors = self.graph.neighbors(id)
-                max_neighbor_time = node.current_host_time_nanoseconds
-                for neighbor in neighbors:
-                    neighbor_node = self.nodes_dict[neighbor]
-                    if neighbor_node.current_host_time_nanoseconds > max_neighbor_time:
-                        max_neighbor_time = neighbor_node.current_host_time_nanoseconds
-                node.jump_host_to_time(max_neighbor_time)
-            return finished
+    def is_glbal_barrier_ready(self):
+        """Check if the global barrier is ready."""
+        return all(node.MODE == "SYNCHRONIZATION" or node.MODE == "WAITING_ON_BARRIER" for node in self.nodes)
 
+    def is_local_barrier_ready(self, node: SimulationNode):
+        can_leave_barrier = True
+
+        for neighbor in self.graph.neighbors(node.get_id()):
+            neighbor_node = self.nodes_dict[neighbor]
+            if neighbor_node.MODE == "QUANTA_SIMULATION":
+                if neighbor_node.current_target_time_nanoseconds <= node.current_target_time_nanoseconds:
+                    can_leave_barrier = False
+                    break
+        
+        return can_leave_barrier
+
+    def update_barriers(self):
+        """Update whether or not a nod can leave its end of quanta barrier"""
+        if self.has_global_barrier:
+            # If we have a global barrier, we check if all nodes have reached their quanta.
+            if self.is_glbal_barrier_ready():
+                for node in self.nodes:
+                    node.change_mode("SYNCHRONIZATION")
+        else:
+            for node in self.nodes:
+                if self.is_local_barrier_ready(node) and node.MODE == "WAITING_ON_BARRIER" and not node.is_done():
+                    node.change_mode("SYNCHRONIZATION")
+                    
+                
+
+        
+
+    def print_simulation_state(self):
+        """Print the current state of the simulation."""
+        if self.verbose:
+            for node in self.nodes:
+                total_execution_time = "NA"
+                time_left = "NA"
+                if node.execution_details is not None:
+                    total_execution_time = node.execution_details.get_total_execution_time()
+                    time_left = node.execution_details.get_time_left_ns()
+                logger.debug(f"Node {node.get_id()} - "
+                    f"Mode: {node.MODE}, "
+                    f"Current Host Time: {node.current_host_time_nanoseconds} ns, "
+                    f"Target Time: {node.current_target_time_nanoseconds} ns, "
+                    f"current target instruction executed: {node.target_instructions_executed}, "
+                    f"Execution total execution time: {total_execution_time}"
+                    f"Execution detail time left: {time_left} ns, ")
 
 
     def simulate(self):
         self.schedule_nodes()
+
         finished = False
         while not finished:
+            finished = True
+            min_time_to_simulate = min([node.execution_details.get_time_left_ns() for node in self.nodes if (not node.MODE == "WAITING_ON_BARRIER")])
+            
+            logger.debug("="*50)
+            self.print_simulation_state()
+            logger.debug(f"Simulating for {min_time_to_simulate} nanoseconds.")
+            
+            assert min_time_to_simulate > 0, "Nodes are not finished yet, but no time to simulate. This should not happen."
+         
             for node in self.nodes:
+                node.simulate(min_time_to_simulate)
                 if not node.is_done():
-                    node.simulate_for_quanta()
-            finished = self.pause_nodes_based_on_barrier()
+                    finished = False
+
+            logger.debug("after simulating")
+            self.print_simulation_state()
+
+            self.update_barriers()
+            
+            logger.debug("after updating barriers")
+            self.print_simulation_state()
+            logger.debug("="*50)
+
+           
+                
+
+        
         time = max([node.current_host_time_nanoseconds for node in self.nodes])
         return time
                             
