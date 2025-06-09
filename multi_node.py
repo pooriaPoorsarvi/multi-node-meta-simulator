@@ -15,6 +15,7 @@ class MultiNodeSimulation:
                  nodes: list[SimulationNode],
                  graph: nx.Graph,
                  master_node: MasterNode = None,
+                 global_quanta_nanoseconds: int = -1,
                  verbose: bool = False):
     
         """        Initialize the simulation configuration.
@@ -27,7 +28,6 @@ class MultiNodeSimulation:
         self.has_global_barrier = has_global_barrier
         self.is_distributed = is_distributed
         self.has_global_quanta = has_global_quanta
-        self.current_time_nanoseconds = 0
         self.nodes = nodes
 
         if not is_distributed:
@@ -43,6 +43,8 @@ class MultiNodeSimulation:
 
         self.graph = graph
         self.nodes_dict = {node.get_id(): node for node in nodes}
+
+        # TODO The next part, setting quanta is wrong I think, should remove 
         for edge in graph.edges:
             node1, node2 = edge
             latency_nanoseconds = graph[node1][node2]['latency_nanoseconds']
@@ -52,11 +54,17 @@ class MultiNodeSimulation:
             self.nodes_dict[node2].set_quanta_nanoseconds(latency_nanoseconds)
 
 
-        if has_global_quanta:
+        if not has_global_quanta:
             for node in self.nodes:
                 id = node.get_id()
                 min_latency_nano_seconds = min([self.graph[id][neighbor]['latency_nanoseconds'] for neighbor in self.graph.neighbors(id)])
                 node.set_quanta_nanoseconds(min_latency_nano_seconds)
+        else:
+            assert global_quanta_nanoseconds > 0, "Global quanta nanoseconds must be greater than 0."
+            for node in self.nodes:
+                node.set_quanta_nanoseconds(global_quanta_nanoseconds)
+
+
         if not self.is_distributed:
             assert master_node is not None, "In a non-distributed simulation, a master node must be provided."
             self.master_node = master_node
@@ -140,7 +148,10 @@ class MultiNodeSimulation:
 
     def update_barriers(self):
         """Update whether or not a nod can leave its end of quanta barrier"""
-        if self.has_global_barrier:
+        if len(self.nodes) == 1:
+            if self.nodes[0].MODE == "WAITING_ON_BARRIER":
+                self.nodes[0].change_mode("SYNCHRONIZATION")
+        elif self.has_global_barrier:
             # If we have a global barrier, we check if all nodes have reached their quanta.
             if self.is_glbal_barrier_ready():
                 for node in self.nodes:
