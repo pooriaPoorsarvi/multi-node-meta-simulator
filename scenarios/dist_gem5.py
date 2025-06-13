@@ -75,8 +75,8 @@ def gem5_net(
         has_global_quanta=True,
         is_distributed=False,
         n_nodes=num_nodes,
-        # This assumes that we are simulating a 64 core system, so based on simulation nodes IPS gets divided by 64
-        synchronization_overhead_ns=int((num_nodes ** 2) * 5e3),
+        # This assumes that we are simulating a 16 core system, so based on simulation nodes IPS gets divided by 16
+        synchronization_overhead_ns=int((num_nodes ** 2) * 6e4),
         ips_per_node=GEM5_IPS/(4), # running 4 nodes per core, so divide by 4
         communication_latency_ns=communication_latency_ns,
     )
@@ -85,7 +85,7 @@ def gem5_net(
 
 def test_nodes():
     node_results = []
-    for i in range(7):
+    for i in range(5):
         num_nodes = 2 ** i
         print(f"Running simulation with {num_nodes} nodes...")
         net: MultiNodeSimulation = gem5_net(
@@ -100,13 +100,45 @@ def test_nodes():
     run_times_normalized = [time / node_results[0] for time in node_results]
     print("Run Times Normalized:", run_times_normalized)
     print("Number of Nodes:", [2 ** i for i in range(7)])
+    # Number of simulated nodes (X-axis)
+
+    # Normalized simulation time for dist-gem5 (Y-axis)
+    estimated_dist_gem5_times_from_paper = [1.0, 1.12, 1.2, 1.4, 1.9]
     # Save seaborn lineplot with number of nodes on x-axis and normalized time on y-axis
     sns.set_theme(style="whitegrid")
     ax = sns.lineplot(
-        x=[2 ** i for i in range(7)],
+        x=[(2 ** i) * 4 for i in range(5)],
         y=run_times_normalized,
-        marker='o'
+        marker='o',
+        label='Simulated Dist-Gem5'
     )
+    # Add the estimated dist-gem5 times from the paper
+    ax = sns.lineplot(
+        x=[(2 ** i) * 4 for i in range(5)],
+        y=estimated_dist_gem5_times_from_paper,
+        marker='o',
+        label='Dist-Gem5'
+    )
+    p_gem5_times_from_paper = [1.0, 1.9, 3.9, 11.2, 23.9]
+    # Add the estimated p-gem5 times from the paper
+    ax = sns.lineplot(
+        x=[(2 ** i) * 4 for i in range(5)],
+        y=p_gem5_times_from_paper,
+        marker='o',
+        label='P-Gem5'
+    )
+    # Make y axis logarithmic
+    ax.set_yscale('log')
+
+    handles, labels = ax.get_legend_handles_labels()
+    order = ["P-Gem5", "Dist-Gem5", "Simulated Dist-Gem5"]
+    ordered_handles = [handles[labels.index(day)] for day in order]
+    ax.legend(ordered_handles, order, loc='upper left')
+
+
+    ax.set(xlabel='Number of Nodes', ylabel='Normalized Time (to 1 Node)')
+    ax.set_title("Simulation Time vs Number of Nodes (Normalized)")
+    # The order of the legend should be the same as the order of the lines
     ax.set(xlabel='Number of Nodes', ylabel='Normalized Time (to 2 nodes)')
     ax.set_title("Simulation Time vs Number of Nodes (Normalized)")
     # Save figure
@@ -115,13 +147,13 @@ def test_nodes():
     plt.clf()
 
 def test_latencies():
-    # Now focus on 64 nodes with various communication latencies
+    # Now focus on 16 nodes with various communication latencies
     communication_latencies = [(2 ** i) * 500 for i in range(9)]
     communication_results = []
     for communication_latency_ns in communication_latencies:
-        print(f"Running simulation with 64 nodes and communication latency {communication_latency_ns} ns...")
+        print(f"Running simulation with 16 nodes and communication latency {communication_latency_ns} ns...")
         net: MultiNodeSimulation = gem5_net(
-            num_nodes=64,
+            num_nodes=16,
             communication_latency_ns=communication_latency_ns
         )
         host_time = net.simulate_for_nanoseconds_in_target(FINAL_TARGET_TIME_NS)
@@ -133,16 +165,24 @@ def test_latencies():
     communication_results_normalized = [time / communication_results[0] for time in communication_results]
     print("Communication Results Normalized:", communication_results_normalized)
     print("Communication Latencies:", communication_latencies)
-    
-    # Save seaborn plot using barplot with communication latencies on x-axis and normalized time on y-axis
+    normalized_sim_times_from_paper = [1.0, 0.94, 0.92, 0.90, 0.89, 0.89, 0.88, 0.88, 0.87]
     sns.set_theme(style="whitegrid")
+    
+    combined_results = [normalized_sim_times_from_paper[i//2] if i %2  == 0 else communication_results_normalized[i//2]  for i in range(2 * len(communication_results_normalized))]
+    tags = ['dist-gem5' if i %2  == 0 else 'Simulated dist-gem5' for i in range(2 * len(communication_results_normalized))]
+    communication_latencies_combined = [communication_latencies[i//2] for i in range(2 * len(communication_latencies))]
+    print("Combined Results:", combined_results)
+    print("Tags:", tags)
+    print("Communication Latencies Combined:", communication_latencies_combined)
+    # Bar plot with communication latencies on x-axis and normalized time on y-axis
     ax = sns.barplot(
-        x=[int(c/1000) if int(c/1000) > 0 else c/1000 for c in communication_latencies ],
-        y=communication_results_normalized
+        x=[int(c/1000) if int(c/1000) > 0 else c/1000 for c in communication_latencies_combined ],
+        y=combined_results,
+        hue=tags,
+        palette=["#ff7f0e", "#1f77b4"],
     )
+
     ax.set(xlabel='Communication Latency (μs)', ylabel='Normalized Time (to 500 ns)')
-    # TODO bad trick to fix the x-axis formatting, fix later
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x)}' if x >= 1 else f'0.5'))
     ax.set_title("Simulation Time vs Communication Latency (Normalized)")
     # Save figure
     ax.figure.savefig("gem5_simulation_time_vs_communication_latency.png")
